@@ -1,3 +1,47 @@
+local __lab
+-- Progres di layar: kalau UI tidak muncul, baris terakhir menunjukkan di langkah mana script berhenti
+local function __step(msg, level) -- level: nil = info, "warn", "fatal"
+    pcall(function()
+        if not __lab or not __lab.Parent then
+            local gui = Instance.new("ScreenGui")
+            gui.Name = "KzoyzOpusStep"
+            gui.ResetOnSpawn = false
+            gui.DisplayOrder = 999998
+            local l = Instance.new("TextLabel")
+            l.Position = UDim2.new(0, 8, 0, 8)
+            l.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+            l.BackgroundTransparency = 0.2
+            l.TextWrapped = true
+            l.TextSize = 13
+            l.Font = Enum.Font.Code
+            l.TextXAlignment = Enum.TextXAlignment.Left
+            l.TextYAlignment = Enum.TextYAlignment.Top
+            l.Parent = gui
+            local parent = (type(gethui) == "function" and gethui()) or nil
+            if not parent then
+                local okC, core = pcall(function() return game:GetService("CoreGui") end)
+                parent = okC and core or game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+            end
+            gui.Parent = parent
+            __lab = l
+        end
+        __lab.TextColor3 = (level == "fatal" and Color3.fromRGB(255, 120, 120))
+            or (level == "warn" and Color3.fromRGB(255, 210, 120)) or Color3.fromRGB(255, 255, 255)
+        __lab.Size = UDim2.new(0, 380, 0, level and 90 or 36)
+        __lab.Text = "Kzoyz > " .. tostring(msg)
+        local shown = __lab.Text
+        if level ~= "fatal" then
+            task.delay(25, function()
+                if __lab and __lab.Parent and __lab.Text == shown then
+                    __lab.Parent:Destroy()
+                    __lab = nil
+                end
+            end)
+        end
+    end)
+end
+__step("1/6 script mulai")
+
 local __ok, __err = xpcall(function()
 local G = (getgenv and getgenv()) or _G
 for _, key in ipairs({ "__KzoyzOpus", "__GTFarm" }) do -- __GTFarm = nama versi lama
@@ -16,6 +60,7 @@ function Session.log(...)
     for i = 1, select("#", ...) do t[i] = tostring((select(i, ...))) end
     local msg = "[Kzoyz x Opus] " .. table.concat(t, " ")
     warn(msg)
+    __step(table.concat(t, " "), "warn")
     return msg
 end
 
@@ -39,6 +84,10 @@ function Session.req(parent, name)
         return nil
     end
     return r
+end
+
+function Session.fatal(msg)
+    __step("GAGAL: " .. msg .. " (struktur game disalin ke clipboard)", "fatal")
 end
 
 -- Cetak isi ReplicatedStorage + GameGui (2 tingkat) supaya nama baru bisa dilihat; disalin ke clipboard
@@ -91,6 +140,7 @@ local Shared = Session.waitFor(ReplicatedStorage, "Shared")
 local WorldRemotes = Session.waitFor(ReplicatedStorage, "WorldRemotes", 4)
 if not Shared then
     Session.dump()
+    Session.fatal("folder ReplicatedStorage.Shared tidak ada (game update?)")
     do return end
 end
 -- Remote lama (versi game sebelum ByteNet). Hanya dipakai kalau fungsi baru tidak ada.
@@ -100,6 +150,7 @@ local ItemDB = Session.req(Shared, "ItemDB")
 local InventoryModule = Session.req(Shared, "Inventory")
 if not ItemDB or not InventoryModule then
     Session.dump()
+    Session.fatal("module ItemDB / Inventory tidak bisa dimuat (game update?)")
     do return end
 end
 local NetOk, Net = pcall(require, Shared:FindFirstChild("Net"))
@@ -107,12 +158,14 @@ local NetOk, Net = pcall(require, Shared:FindFirstChild("Net"))
 local GameGui = Session.waitFor(PlayerGui, "GameGui")
 if not GameGui then
     Session.dump()
+    Session.fatal("PlayerGui.GameGui tidak ada (game update?)")
     do return end
 end
 local ParticlesOk, ParticlesModule = pcall(require, Session.waitFor(GameGui, "Particles", 5))
 local MenuModOk, MenuModule = pcall(require, Session.waitFor(GameGui, "WorldMenu", 5))
 local RolesOk, RolesModule = pcall(require, Shared:FindFirstChild("Roles"))
 local SfxOk, SfxModule = pcall(require, Shared:FindFirstChild("Sfx"))
+__step("2/6 modul game ok")
 
 local WindUI
 for _, url in ipairs({
@@ -137,6 +190,7 @@ for _, url in ipairs({
     end
 end
 if not WindUI then error("WindUI tidak bisa dimuat (cek internet / executor tidak mendukung HttpGet)") end
+__step("3/6 WindUI dimuat")
 
 ---------------------------------------------------------------------
 -- PENGATURAN & DATA
@@ -8340,6 +8394,7 @@ do (function()
         I18N.Lang, I18N.Saved, chosen = lang, lang, true
     end
     local ok = pcall(function()
+        __step("menunggu popup bahasa (maks 8 detik, kalau tak muncul tunggu saja)")
         WindUI:Popup({
             Title = "Kzoyz x Opus",
             Icon = "languages",
@@ -8384,6 +8439,7 @@ do
     end
     Window = I18N.wrap(w)
 end
+__step("4/6 window dibuat")
 -- Tombol minimize muncul di mobile DAN PC (OnlyMobile=false), bisa digeser.
 -- Cadangan PC: kalau tombol susah dicari, tekan Insert.
 pcall(function()
@@ -12012,6 +12068,7 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
     end)
 end)() end
 
+__step("5/6 tab dibuat")
 -- ===== TAB: KONEKSI =====
 local ConnTab = makeTab("Koneksi", "plug", "setel")
 
@@ -12390,6 +12447,7 @@ Session.Cleanup = function()
     pcall(function() FlyPad:Destroy() end)
     pcall(function() Window:Destroy() end)
 end
+__step("6/6 selesai - menu: tombol Insert (kalau UI tidak terlihat)")
 end, function(e) return debug.traceback(tostring(e), 2) end)
 
 if not __ok then
