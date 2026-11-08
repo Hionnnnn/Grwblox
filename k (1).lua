@@ -1,4 +1,4 @@
-
+local __ok, __err = xpcall(function()
 local G = (getgenv and getgenv()) or _G
 for _, key in ipairs({ "__KzoyzOpus", "__GTFarm" }) do -- __GTFarm = nama versi lama
     if G[key] and G[key].Cleanup then pcall(G[key].Cleanup) end
@@ -114,9 +114,29 @@ local MenuModOk, MenuModule = pcall(require, Session.waitFor(GameGui, "WorldMenu
 local RolesOk, RolesModule = pcall(require, Shared:FindFirstChild("Roles"))
 local SfxOk, SfxModule = pcall(require, Shared:FindFirstChild("Sfx"))
 
-local WindUI = loadstring(game:HttpGet(
-    "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"
-))()
+local WindUI
+for _, url in ipairs({
+    "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua",
+    "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua", -- cadangan
+}) do
+    local okH, src = pcall(function() return game:HttpGet(url) end)
+    if not okH or type(src) ~= "string" or #src < 1000 then
+        Session.log("WindUI gagal diunduh:", url, tostring(src))
+    else
+        local fn, perr = loadstring(src)
+        if not fn then
+            Session.log("WindUI gagal di-compile:", url, tostring(perr))
+        else
+            local okR, lib = pcall(fn)
+            if okR and type(lib) == "table" then
+                WindUI = lib
+                break
+            end
+            Session.log("WindUI gagal dijalankan:", url, tostring(lib))
+        end
+    end
+end
+if not WindUI then error("WindUI tidak bisa dimuat (cek internet / executor tidak mendukung HttpGet)") end
 
 ---------------------------------------------------------------------
 -- PENGATURAN & DATA
@@ -8320,22 +8340,36 @@ do (function()
     end)
     if not ok then return end
     local t0 = os.clock()
-    while not chosen and os.clock() - t0 < 30 and alive() do task.wait(0.1) end
-    late = not chosen -- tidak dipilih dalam 30 detik: pakai bahasa terakhir
+    while not chosen and os.clock() - t0 < 8 and alive() do task.wait(0.1) end
+    late = not chosen -- tidak dipilih dalam 8 detik: pakai bahasa terakhir
     if chosen then Config.save(true) end
 end)() end
 
-local Window = I18N.wrap(WindUI:CreateWindow({
-    Title = "Kzoyz x Opus",
-    Icon = "sprout",
-    Author = "v5.9.0 | Tester",
-    Folder = "KzoyzOpus",
-    Size = UDim2.fromOffset(640, 380),
-    Theme = "Dark",
-    Transparent = true,
-    SideBarWidth = 150,
-    ToggleKey = Enum.KeyCode.Insert,  -- PC: tekan Insert untuk buka/tutup menu
-}))
+local Window
+do
+    local okW, w = pcall(function()
+        return WindUI:CreateWindow({
+            Title = "Kzoyz x Opus",
+            Icon = "sprout",
+            Author = "v5.9.0 | Tester",
+            Folder = "KzoyzOpus",
+            Size = UDim2.fromOffset(640, 380),
+            Theme = "Dark",
+            Transparent = true,
+            SideBarWidth = 150,
+            ToggleKey = Enum.KeyCode.Insert,  -- PC: tekan Insert untuk buka/tutup menu
+        })
+    end)
+    if not okW then
+        Session.log("CreateWindow gagal, coba pengaturan minimal:", tostring(w))
+        local ok2, w2 = pcall(function()
+            return WindUI:CreateWindow({ Title = "Kzoyz x Opus", Folder = "KzoyzOpus", Size = UDim2.fromOffset(640, 380) })
+        end)
+        if not ok2 then error("CreateWindow gagal: " .. tostring(w2)) end
+        w = w2
+    end
+    Window = I18N.wrap(w)
+end
 -- Tombol minimize muncul di mobile DAN PC (OnlyMobile=false), bisa digeser.
 -- Cadangan PC: kalau tombol susah dicari, tekan Insert.
 pcall(function()
@@ -11859,4 +11893,41 @@ Session.Cleanup = function()
     pcall(function() GridGui:Destroy() end)
     pcall(function() FlyPad:Destroy() end)
     pcall(function() Window:Destroy() end)
+end
+end, function(e) return debug.traceback(tostring(e), 2) end)
+
+if not __ok then
+    local msg = "[Kzoyz x Opus] SCRIPT ERROR:\n" .. tostring(__err)
+    warn(msg)
+    pcall(function() if type(setclipboard) == "function" then setclipboard(msg) end end)
+    pcall(function()
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "KzoyzOpusError"
+        gui.ResetOnSpawn = false
+        gui.DisplayOrder = 999999
+        local box = Instance.new("TextLabel")
+        box.Size = UDim2.new(0.9, 0, 0.5, 0)
+        box.Position = UDim2.new(0.05, 0, 0.1, 0)
+        box.BackgroundColor3 = Color3.fromRGB(30, 10, 10)
+        box.TextColor3 = Color3.fromRGB(255, 200, 200)
+        box.TextXAlignment = Enum.TextXAlignment.Left
+        box.TextYAlignment = Enum.TextYAlignment.Top
+        box.TextWrapped = true
+        box.TextSize = 14
+        box.Font = Enum.Font.Code
+        box.Text = msg .. "\n\n(sudah disalin ke clipboard - kirim ke pembuat script. Ketuk untuk tutup)"
+        box.Parent = gui
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, 0, 1, 0)
+        btn.BackgroundTransparency = 1
+        btn.Text = ""
+        btn.Parent = box
+        btn.MouseButton1Click:Connect(function() gui:Destroy() end)
+        local parent = (type(gethui) == "function" and gethui()) or nil
+        if not parent then
+            local okC, core = pcall(function() return game:GetService("CoreGui") end)
+            parent = okC and core or game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+        end
+        gui.Parent = parent
+    end)
 end
