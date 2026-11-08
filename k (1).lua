@@ -7756,8 +7756,21 @@ function Build.startDF()
         return
     end
     local ww = Refs.World and Refs.World.w
-    Land.X0, Land.X1 = 0, (type(ww) == "number" and ww - 1) or 99 -- mentok kiri sampai mentok kanan
+    ww = (type(ww) == "number") and ww or 100
+    -- kolom paling pinggir yang tidak bisa dipecah (batas world) tidak dipakai: lubang tangga harus bisa di-break
+    local function colOk(x)
+        for y = 36, 54 do
+            local id = fgIdAt(x, y)
+            if id ~= 0 and not canBreak(id) then return false end
+        end
+        return true
+    end
+    local xa, xb = 0, ww - 1
+    while xa < 4 and not colOk(xa) do xa += 1 end
+    while xb > ww - 5 and not colOk(xb) do xb -= 1 end
+    Land.X0, Land.X1 = xa, xb -- mentok kiri sampai mentok kanan (yang bisa dipecah)
     Land.Y0, Land.MaxRows, Land.Stairs = 39, 8, true
+    notify("Auto DF", ("x %d-%d | tunnel y 38-52 | tangga di y 39-51"):format(xa, xb), 5)
     Land.Cache = nil
     Build.UseBlock, Build.Produce, Build.ThenPabrik = true, true, false
     Build.start()
