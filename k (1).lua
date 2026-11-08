@@ -241,6 +241,7 @@ local Build = {
     Produce = true,      -- block kurang -> produksi dulu (tanam & panen) sampai cukup
     ThenPabrik = false,  -- selesai -> langsung jalankan Pabrik
     DF = false,          -- mode Auto DF: block / seed kurang -> dibiarkan, tidak berhenti dengan error
+    DFCfg = { X0 = 1, X1 = 100, Y = 39, Rows = 8 }, -- Y = baris terowongan pertama; tangga di Y-1, Y+1, ... (zigzag)
     Placed = 0,
     Phase = "-",
     Status = "-",
@@ -6898,6 +6899,10 @@ function Build.carveList(P)
             add(x, y - 1, "gap")
             if x == up then add(x, P.rows[k - 1], "hole") end
         end
+        if k == 1 and Build.DF then -- tangga paling atas (di atas terowongan pertama), ujung kiri & kanan
+            add(P.x0 + 1, y - 2, "hole")
+            add(P.x1 - 1, y - 2, "hole")
+        end
         -- lubang ujung akhir baris ini = jalan turun ke celah baris bawahnya
         if k < P.K and #P.holes[k] > 0 then
             local h = P.holes[k]
@@ -7737,7 +7742,7 @@ function Build.start()
     end)
 end
 
--- Auto DF (1x klik): lahan x 0 sampai ujung kanan, baris gali y 38,40..52 (8 baris) => baris block y 39,41..53,
+-- Auto DF (1x klik): x 1-100, terowongan y 39,41..53, tangga zigzag y 38,40..52 (pengaturan di Build.DFCfg / tab Lahan),
 -- tangga zigzag di ujung kiri/kanan (landCols), gali tanah / gua / lava, block kurang -> tanam & panen.
 function Build.startDF()
     if Build.Running then return end
@@ -7755,22 +7760,16 @@ function Build.startDF()
         if UI.DFToggle then pcall(function() UI.DFToggle:Set(false) end) end
         return
     end
+    local c = Build.DFCfg
     local ww = Refs.World and Refs.World.w
-    ww = (type(ww) == "number") and ww or 100
-    -- kolom paling pinggir yang tidak bisa dipecah (batas world) tidak dipakai: lubang tangga harus bisa di-break
-    local function colOk(x)
-        for y = 36, 54 do
-            local id = fgIdAt(x, y)
-            if id ~= 0 and not canBreak(id) then return false end
-        end
-        return true
-    end
-    local xa, xb = 0, ww - 1
-    while xa < 4 and not colOk(xa) do xa += 1 end
-    while xb > ww - 5 and not colOk(xb) do xb -= 1 end
-    Land.X0, Land.X1 = xa, xb -- mentok kiri sampai mentok kanan (yang bisa dipecah)
-    Land.Y0, Land.MaxRows, Land.Stairs = 39, 8, true
-    notify("Auto DF", ("x %d-%d | tunnel y 38-52 | tangga di y 39-51"):format(xa, xb), 5)
+    local xa = math.max(0, math.floor(math.min(c.X0, c.X1)))
+    local xb = math.floor(math.max(c.X0, c.X1))
+    if type(ww) == "number" then xb = math.min(xb, ww - 1) end
+    Land.X0, Land.X1 = xa, xb
+    -- baris block (lantai) = terowongan + 1; tangga zigzag di baris terowongan - 1, +1, +3, ...
+    Land.Y0, Land.MaxRows, Land.Stairs = math.max(2, math.floor(c.Y) + 1), math.clamp(math.floor(c.Rows), 1, 40), true
+    notify("Auto DF", ("x %d-%d | terowongan y %d-%d | tangga y %d-%d"):format(
+        xa, xb, c.Y, c.Y + 2 * (Land.MaxRows - 1), c.Y - 1, c.Y + 2 * (Land.MaxRows - 1) - 1), 5)
     Land.Cache = nil
     Build.UseBlock, Build.Produce, Build.ThenPabrik = true, true, false
     Build.start()
@@ -10641,7 +10640,7 @@ do (function()
     safe(function()
         UI.DFToggle = lCtl:Toggle({
             Title = "Auto DF (1x klik)",
-            Desc = "Gali tanah, gua & lava di y 38-52 (x sampai ujung world), tangga zigzag di ujung, block kurang tanam & panen. Block / seed kurang dibiarkan",
+            Desc = "Gali tanah, gua & lava: terowongan y 39,41..53, tangga zigzag y 38,40..52, x 1-100 (bisa diubah di bawah), block kurang tanam & panen. Block / seed kurang dibiarkan",
             Value = false,
             Callback = function(on)
                 if on then Build.startDF() elseif Build.Running then Build.stop() end
@@ -10706,6 +10705,23 @@ do (function()
             Callback = function(t) Land.Y0 = math.max(1, num(t, Land.Y0)) end,
         })
     end)
+
+    for _, f in ipairs({
+        { "X0", "DF: X awal", "Kolom paling kiri Auto DF (default 1)", 0 },
+        { "X1", "DF: X akhir", "Kolom paling kanan Auto DF (default 100)", 0 },
+        { "Y", "DF: Y terowongan pertama", "Baris terowongan paling atas (default 39). Tangga zigzag 1 baris di atasnya (38)", 1 },
+        { "Rows", "DF: jumlah terowongan", "Default 8 (y 39..53)", 1 },
+    }) do
+        safe(function()
+            lCtl:Input({
+                Title = f[2],
+                Desc = f[3],
+                Value = tostring(Build.DFCfg[f[1]]),
+                Placeholder = tostring(Build.DFCfg[f[1]]),
+                Callback = function(t) Build.DFCfg[f[1]] = math.max(f[4], num(t, Build.DFCfg[f[1]])) end,
+            })
+        end)
+    end
 
     safe(function()
         lShape:Button({
