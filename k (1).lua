@@ -11579,11 +11579,80 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
         Send = {},          -- [nama] = fungsi kirim asli
         LX = nil, LY = nil,
         WorldHooked = nil,
+        Spy = false,        -- rekam paket keluar / event masuk untuk diagnosa
+        SpyN = {},
+        Log = {},
+        SpyInHooked = false,
     }
     Auto.AntiPull = AP
 
     local DENY = { tile = true, act = true, call = true, on = true, EVENTS = true }
     local ACTION = { tile = true, act = true }
+
+    -- ===== perekam paket (diagnosa) =====
+    local function ser(v, d)
+        d = d or 0
+        local t = typeof(v)
+        if t == "table" then
+            if d >= 3 then return "{...}" end
+            local parts, n = {}, 0
+            for k, x in pairs(v) do
+                n += 1
+                if n > 24 then parts[#parts + 1] = "..." break end
+                parts[#parts + 1] = tostring(k) .. "=" .. ser(x, d + 1)
+            end
+            return "{" .. table.concat(parts, ", ") .. "}"
+        elseif t == "string" then
+            return string.format("%q", v):sub(1, 80)
+        elseif t == "number" then
+            return tostring(math.floor(v * 1000 + 0.5) / 1000)
+        end
+        return tostring(v)
+    end
+
+    local function logLine(txt)
+        AP.Log[#AP.Log + 1] = string.format("[%.2f] %s", os.clock() % 1000, txt)
+        if #AP.Log > 500 then table.remove(AP.Log, 1) end
+    end
+
+    local function logState(tag)
+        local st = playerState()
+        if st then logLine(tag .. " STATE " .. ser(st)) end
+    end
+
+    local function spyOut(key, ...)
+        if not AP.Spy then return end
+        local n = (AP.SpyN[key] or 0) + 1
+        AP.SpyN[key] = n
+        if n > 6 and n % 40 ~= 0 then return end -- paket yang sering: 6 pertama + tiap ke-40
+        local a = pack(...)
+        local parts = {}
+        for i = 1, a.n do parts[i] = ser(a[i]) end
+        logLine(string.format("OUT %s #%d (%s)", key, n, table.concat(parts, ", ")))
+    end
+
+    local function hookIn()
+        if AP.SpyInHooked or not (NetOk and type(Net) == "table" and type(Net.on) == "function"
+            and type(Net.EVENTS) == "table") then return end
+        local c = 0
+        for ev in pairs(Net.EVENTS) do
+            if type(ev) == "string" then
+                local ok = pcall(Net.on, ev, function(msg)
+                    if alive() and AP.Spy then
+                        local key = "IN:" .. ev
+                        local n = (AP.SpyN[key] or 0) + 1
+                        AP.SpyN[key] = n
+                        if n <= 6 or n % 40 == 0 then logLine(string.format("IN %s #%d %s", ev, n, ser(msg))) end
+                    end
+                end, function()
+                    local w = Refs.World
+                    return w and rawget(w, "name") or ""
+                end)
+                if ok then c += 1 end
+            end
+        end
+        AP.SpyInHooked = c > 0
+    end
 
     local function sendAll(tbl)
         for name, args in pairs(tbl) do
@@ -11614,6 +11683,8 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
             notify("Anti-Pull", "Tarikan terdeteksi tapi paket posisi belum diketahui: pakai 'Pelajari paket posisi'", 5)
             return
         end
+        logLine(string.format("JUMP ke (%.2f, %.2f)", x or 0, y or 0))
+        logState("JUMP")
         local cutoff = os.clock() - 0.3 -- paket posisi sebelum tarikan (bukan yang sudah di tempat baru)
         AP.Fake = {}
         for name, h in pairs(AP.Hist) do
@@ -11648,6 +11719,7 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
 
     -- semua paket keluar lewat sini; hanya paket posisi yang diubah perilakunya
     local function route(key, send, ...)
+        if alive() then spyOut(key, ...) end
         if not (alive() and AP.On) then return send(...) end
         if AP.Learning then AP.Count[key] = (AP.Count[key] or 0) + 1 end
         if not AP.Move[key] then return send(...) end
@@ -11678,6 +11750,7 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
                     local ok = pcall(function()
                         if ACTION[name] then
                             pk.send = function(...)
+                                if alive() then spyOut(name, ...) end
                                 if alive() and AP.On and AP.Frozen and AP.Actions then
                                     flashBegin()
                                     local r = pack(pcall(orig, ...))
@@ -11855,6 +11928,41 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
             Desc = "Ambil drop / pukul / pasang block: posisi asli dikirim sebentar lalu kembali ke palsu (orang lain bisa melihat kedipan). Matikan = murni invisible, aksi jauh bisa ditolak server",
             Value = true,
             Callback = function(on) AP.Actions = on end,
+        })
+    end)
+    safe(function()
+        APTab:Toggle({
+            Title = "Rekam paket (diagnosa)",
+            Desc = "Catat paket keluar + event dari server (termasuk saat ditarik). Setelah ditarik / invisible, klik 'Salin log' lalu kirim ke pembuat script",
+            Value = false,
+            Callback = function(on)
+                AP.Spy = on
+                if on then
+                    installNet()
+                    installRemotes()
+                    hookIn()
+                    logState("START")
+                end
+            end,
+        })
+    end)
+    safe(function()
+        APTab:Button({
+            Title = "Salin log paket",
+            Desc = "Salin hasil rekaman ke clipboard (juga dicetak ke console F9)",
+            Callback = function()
+                local text = table.concat(AP.Log, "\n")
+                print(text)
+                if type(setclipboard) == "function" then pcall(setclipboard, text) end
+                notify("Anti-Pull", ("%d baris log disalin"):format(#AP.Log), 3)
+            end,
+        })
+    end)
+    safe(function()
+        APTab:Button({
+            Title = "Hapus log",
+            Desc = "Kosongkan rekaman",
+            Callback = function() AP.Log, AP.SpyN = {}, {} end,
         })
     end)
     safe(function()
