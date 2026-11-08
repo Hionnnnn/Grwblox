@@ -11547,6 +11547,363 @@ do (function()
     end)
 end)() end
 
+-- ===== TAB: ANTI PULL (mode invisible) =====
+-- Setelah kamu ditarik: orang lain terus melihat karakter di tempat SEBELUM tarikan (paket posisi lama
+-- dikirim ulang), sedangkan di layarmu kamu ada di tempat tarikan.
+-- Supaya aksi tetap valid di tempat tarikan (ambil drop, pukul, pasang block): tepat sebelum aksi,
+-- posisi asli dikirim sebentar, aksi jalan, lalu posisi palsu dikirim lagi (orang lain bisa melihat kedipan).
+-- Isi paket posisi tidak dibaca: paket yang dikirim game disimpan lalu dikirim ulang apa adanya.
+do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
+    local pack, unpack = table.pack, table.unpack
+    local AP = {
+        On = false,
+        Frozen = false,
+        Actions = true,     -- aksi (ambil/pukul/pasang) tetap valid lewat kedipan posisi asli
+        Hold = 0.15,        -- posisi asli tetap dikirim sekian detik setelah aksi terakhir
+        JumpMin = 6,        -- lompatan posisi (tile) yang dianggap tarikan
+        AutoSec = 0,        -- sinkron otomatis setelah N detik (0 = manual)
+        Move = {},          -- paket posisi: [nama] = true ("R:nama" = RemoteEvent)
+        Names = "",         -- nama paket manual, pisah koma
+        Count = {},
+        Learning = false,
+        Blocked = 0,
+        Flashes = 0,
+        FrozenAt = 0,
+        Flash = 0,
+        FlashUntil = 0,
+        Hooked = {},
+        RemoteHooked = false,
+        Hist = {},          -- [nama] = paket posisi terakhir (sebelum tarikan)
+        Fake = {},          -- [nama] = paket posisi palsu (tempat sebelum tarikan)
+        Real = {},          -- [nama] = paket posisi asli terbaru (selama frozen)
+        Send = {},          -- [nama] = fungsi kirim asli
+        LX = nil, LY = nil,
+        WorldHooked = nil,
+    }
+    Auto.AntiPull = AP
+
+    local DENY = { tile = true, act = true, call = true, on = true, EVENTS = true }
+    local ACTION = { tile = true, act = true }
+
+    local function sendAll(tbl)
+        for name, args in pairs(tbl) do
+            local snd = AP.Send[name]
+            if snd and args then pcall(snd, unpack(args, 1, args.n)) end
+        end
+    end
+
+    local function flashBegin()
+        AP.Flash += 1
+        AP.Flashes += 1
+        sendAll(AP.Real) -- posisi asli dulu, baru aksinya
+    end
+
+    local function flashEnd()
+        AP.Flash = math.max(0, AP.Flash - 1)
+        AP.FlashUntil = os.clock() + AP.Hold
+        task.delay(AP.Hold + 0.03, function()
+            if alive() and AP.Frozen and AP.Flash == 0 and os.clock() >= AP.FlashUntil then
+                sendAll(AP.Fake) -- kembali ke posisi palsu
+            end
+        end)
+    end
+
+    local function freeze(x, y)
+        if AP.Frozen then return end
+        if not next(AP.Move) then
+            notify("Anti-Pull", "Tarikan terdeteksi tapi paket posisi belum diketahui: pakai 'Pelajari paket posisi'", 5)
+            return
+        end
+        local cutoff = os.clock() - 0.3 -- paket posisi sebelum tarikan (bukan yang sudah di tempat baru)
+        AP.Fake = {}
+        for name, h in pairs(AP.Hist) do
+            local pick
+            for i = #h, 1, -1 do
+                if h[i].t <= cutoff then pick = h[i]; break end
+            end
+            pick = pick or h[1]
+            if pick then AP.Fake[name] = pick.a end
+        end
+        AP.Real = {}
+        AP.Frozen = true
+        AP.FrozenAt = os.clock()
+        notify("Anti-Pull", ("Ditarik (%.1f,%.1f). Orang lain tetap melihatmu di tempat lama"):format(x or 0, y or 0), 4)
+    end
+
+    local function resync()
+        if not AP.Frozen then return end
+        AP.Frozen = false
+        sendAll(AP.Real) -- orang lain langsung melihat posisi asli
+        notify("Anti-Pull", "Posisi disinkronkan lagi", 3)
+    end
+
+    local function checkJump()
+        local s = playerState()
+        if not s then AP.LX, AP.LY = nil, nil return end
+        if AP.LX and not AP.Frozen and math.abs(s.x - AP.LX) + math.abs(s.y - AP.LY) >= AP.JumpMin then
+            freeze(s.x, s.y)
+        end
+        AP.LX, AP.LY = s.x, s.y
+    end
+
+    -- semua paket keluar lewat sini; hanya paket posisi yang diubah perilakunya
+    local function route(key, send, ...)
+        if not (alive() and AP.On) then return send(...) end
+        if AP.Learning then AP.Count[key] = (AP.Count[key] or 0) + 1 end
+        if not AP.Move[key] then return send(...) end
+        AP.Send[key] = send
+        if not AP.Frozen then checkJump() end -- cek SEBELUM paket pertama di tempat baru terkirim
+        if AP.Frozen then
+            AP.Real[key] = pack(...)
+            if AP.Flash > 0 or os.clock() < AP.FlashUntil then return send(...) end
+            AP.Blocked += 1
+            local f = AP.Fake[key]
+            if f then return send(unpack(f, 1, f.n)) end
+            return
+        end
+        local h = AP.Hist[key]
+        if not h then h = {}; AP.Hist[key] = h end
+        h[#h + 1] = { t = os.clock(), a = pack(...) }
+        if #h > 12 then table.remove(h, 1) end
+        return send(...)
+    end
+
+    local function installNet()
+        if not (NetOk and type(Net) == "table") then return end
+        for name, pk in pairs(Net) do
+            if type(name) == "string" and type(pk) == "table" and not AP.Hooked[name]
+                and name ~= "call" and name ~= "on" and name ~= "EVENTS" then
+                local okGet, orig = pcall(function() return pk.send end)
+                if okGet and type(orig) == "function" then
+                    local ok = pcall(function()
+                        if ACTION[name] then
+                            pk.send = function(...)
+                                if alive() and AP.On and AP.Frozen and AP.Actions then
+                                    flashBegin()
+                                    local r = pack(pcall(orig, ...))
+                                    flashEnd()
+                                    if r[1] then return unpack(r, 2, r.n) end
+                                    error(r[2], 0)
+                                end
+                                return orig(...)
+                            end
+                        else
+                            pk.send = function(...) return route(name, orig, ...) end
+                        end
+                    end)
+                    if ok then AP.Hooked[name] = true end
+                end
+            end
+        end
+    end
+
+    local function installRemotes()
+        if AP.RemoteHooked or type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then return end
+        local old
+        local function handler(self, ...)
+            if alive() and getnamecallmethod() == "FireServer" and typeof(self) == "Instance" then
+                local inst = self
+                return route("R:" .. inst.Name, function(...) return old(inst, ...) end, ...)
+            end
+            return old(self, ...)
+        end
+        local f = (type(newcclosure) == "function") and newcclosure(handler) or handler
+        local ok = pcall(function() old = hookmetamethod(game, "__namecall", f) end)
+        AP.RemoteHooked = ok and old ~= nil
+    end
+
+    -- ambil drop (World.takeDrop) juga lewat kedipan posisi asli
+    local function hookWorld()
+        local w = Refs.World
+        if not w or AP.WorldHooked == w then return end
+        local orig = rawget(w, "takeDrop")
+        if type(orig) ~= "function" then return end
+        local ok = pcall(function()
+            rawset(w, "takeDrop", function(...)
+                if alive() and AP.On and AP.Frozen and AP.Actions then
+                    flashBegin()
+                    local r = pack(pcall(orig, ...))
+                    flashEnd()
+                    if r[1] then return unpack(r, 2, r.n) end
+                    error(r[2], 0)
+                end
+                return orig(...)
+            end)
+        end)
+        if ok then AP.WorldHooked = w end
+    end
+
+    local function listMove()
+        local t = {}
+        for k in pairs(AP.Move) do t[#t + 1] = k end
+        table.sort(t)
+        return #t > 0 and table.concat(t, ", ") or "(belum ada)"
+    end
+
+    -- nama paket: dari input manual; kalau kosong, tebak dari nama paket Net yang terpasang
+    local function resolveMove()
+        local manual = {}
+        for n in string.gmatch(AP.Names or "", "[^,%s]+") do manual[#manual + 1] = n end
+        if #manual > 0 then
+            AP.Move = {}
+            for _, n in ipairs(manual) do AP.Move[n] = true end
+            return
+        end
+        if next(AP.Move) then return end
+        for name in pairs(AP.Hooked) do
+            local l = string.lower(name)
+            if not ACTION[name] and (l:find("move") or l:find("pos") or l:find("walk") or l:find("sync") or l:find("loc")) then
+                AP.Move[name] = true
+            end
+        end
+    end
+
+    local function setStatus()
+        local hooked = {}
+        for k in pairs(AP.Hooked) do hooked[#hooked + 1] = k end
+        table.sort(hooked)
+        local txt = ("Anti-Pull: %s\nPosisi untuk orang lain: %s\nPaket posisi: %s\nPaket terpasang: %s%s\nPosisi palsu terkirim: %d | kedipan aksi: %d"):format(
+            AP.On and "AKTIF" or "mati",
+            AP.Frozen and "TEMPAT LAMA (kamu sudah ditarik)" or "normal",
+            listMove(),
+            #hooked > 0 and table.concat(hooked, ", ") or "-",
+            AP.RemoteHooked and " + RemoteEvent" or "",
+            AP.Blocked, AP.Flashes
+        )
+        pcall(function() UI.AntiPullStatus:SetDesc(txt) end)
+    end
+
+    -- deteksi tarikan lewat polling (kalau tidak ada paket posisi yang lewat) + sinkron otomatis
+    task.spawn(function()
+        local lw
+        while alive() do
+            task.wait(0.05)
+            if AP.On then
+                local w = Refs.World
+                if w ~= lw then -- ganti world: reset
+                    lw = w
+                    AP.Frozen = false
+                    AP.Hist, AP.Fake, AP.Real = {}, {}, {}
+                    AP.LX, AP.LY = nil, nil
+                end
+                if not AP.Frozen then checkJump() end
+                if AP.Frozen and AP.AutoSec > 0 and os.clock() - AP.FrozenAt >= AP.AutoSec then resync() end
+            else
+                AP.LX, AP.LY = nil, nil
+            end
+        end
+    end)
+
+    task.spawn(function()
+        while alive() do
+            if AP.On then hookWorld() end
+            setStatus()
+            task.wait(0.5)
+        end
+    end)
+
+    local function learn()
+        installNet()
+        installRemotes()
+        AP.Count = {}
+        AP.Learning = true
+        local was = AP.On
+        AP.On = true -- route() hanya menghitung kalau aktif
+        notify("Anti-Pull", "Jalan kiri-kanan 4 detik...", 4)
+        task.delay(4, function()
+            AP.Learning = false
+            AP.On = was
+            local found = {}
+            for name, n in pairs(AP.Count) do
+                if n >= 8 and not ACTION[name] then found[#found + 1] = { name, n } end
+            end
+            table.sort(found, function(a, b) return a[2] > b[2] end)
+            AP.Move = {}
+            local names = {}
+            for i = 1, math.min(#found, 3) do
+                AP.Move[found[i][1]] = true
+                names[#names + 1] = found[i][1] .. "=" .. found[i][2]
+            end
+            notify("Anti-Pull", #names > 0 and ("Paket posisi: " .. table.concat(names, ", "))
+                or "Tidak ada paket yang sering dikirim (isi nama manual)", 6)
+        end)
+    end
+
+    local APTab = makeTab("Anti Pull", "ghost", "aman")
+    safe(function() UI.AntiPullStatus = APTab:Paragraph({ Title = "Status", Desc = "-" }) end)
+    safe(function()
+        APTab:Toggle({
+            Title = "Anti-Pull (mode invisible)",
+            Desc = "Ditarik: di layarmu pindah ke tempat tarikan, di orang lain kamu tetap terlihat di tempat sebelum tarikan",
+            Value = false,
+            Callback = function(on)
+                AP.On = on
+                if on then
+                    installNet()
+                    installRemotes()
+                    hookWorld()
+                    resolveMove()
+                else
+                    resync()
+                end
+            end,
+        })
+    end)
+    safe(function()
+        APTab:Toggle({
+            Title = "Aksi tetap valid di tempat tarikan",
+            Desc = "Ambil drop / pukul / pasang block: posisi asli dikirim sebentar lalu kembali ke palsu (orang lain bisa melihat kedipan). Matikan = murni invisible, aksi jauh bisa ditolak server",
+            Value = true,
+            Callback = function(on) AP.Actions = on end,
+        })
+    end)
+    safe(function()
+        APTab:Button({
+            Title = "Sinkron posisi sekarang",
+            Desc = "Kirim posisi asli (orang lain langsung melihat kamu di tempatmu)",
+            Callback = resync,
+        })
+    end)
+    safe(function()
+        APTab:Button({
+            Title = "Pelajari paket posisi (jalan 4 detik)",
+            Desc = "Klik, lalu jalan kiri-kanan. Paket yang paling sering dikirim dipakai sebagai paket posisi",
+            Callback = learn,
+        })
+    end)
+    safe(function()
+        APTab:Input({
+            Title = "Nama paket posisi (manual)",
+            Desc = "Pisah koma. Nama RemoteEvent diawali R: (mis. R:Move). Kosong = otomatis",
+            Value = "",
+            Placeholder = "move, R:PlayerMove",
+            Callback = function(t)
+                AP.Names = tostring(t or "")
+                AP.Move = {}
+                resolveMove()
+            end,
+        })
+    end)
+    safe(function()
+        APTab:Input({
+            Title = "Jarak tarikan minimum (tile)",
+            Desc = "Lompatan posisi sebesar ini dianggap tarikan (default 6)",
+            Value = tostring(AP.JumpMin),
+            Placeholder = "6",
+            Callback = function(t) AP.JumpMin = math.max(2, tonumber(t) or AP.JumpMin) end,
+        })
+    end)
+    safe(function()
+        APTab:Input({
+            Title = "Sinkron otomatis (detik)",
+            Desc = "0 = manual. Setelah N detik posisi asli dikirim lagi",
+            Value = tostring(AP.AutoSec),
+            Placeholder = "0",
+            Callback = function(t) AP.AutoSec = math.max(0, tonumber(t) or 0) end,
+        })
+    end)
+end)() end
+
 -- ===== TAB: KONEKSI =====
 local ConnTab = makeTab("Koneksi", "plug", "setel")
 
