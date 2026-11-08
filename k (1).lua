@@ -7737,7 +7737,7 @@ function Build.start()
     end)
 end
 
--- Auto DF (1x klik): lahan x 1-100, baris gali y 39,41..53 (8 baris) => baris block y 40,42..54,
+-- Auto DF (1x klik): lahan x 0 sampai ujung kanan, baris gali y 38,40..52 (8 baris) => baris block y 39,41..53,
 -- tangga zigzag di ujung kiri/kanan (landCols), gali tanah / gua / lava, block kurang -> tanam & panen.
 function Build.startDF()
     if Build.Running then return end
@@ -7755,7 +7755,9 @@ function Build.startDF()
         if UI.DFToggle then pcall(function() UI.DFToggle:Set(false) end) end
         return
     end
-    Land.X0, Land.X1, Land.Y0, Land.MaxRows, Land.Stairs = 1, 100, 40, 8, true
+    local ww = Refs.World and Refs.World.w
+    Land.X0, Land.X1 = 0, (type(ww) == "number" and ww - 1) or 99 -- mentok kiri sampai mentok kanan
+    Land.Y0, Land.MaxRows, Land.Stairs = 39, 8, true
     Land.Cache = nil
     Build.UseBlock, Build.Produce, Build.ThenPabrik = true, true, false
     Build.start()
@@ -10626,7 +10628,7 @@ do (function()
     safe(function()
         UI.DFToggle = lCtl:Toggle({
             Title = "Auto DF (1x klik)",
-            Desc = "Gali tanah, gua & lava di y 39-53 (x 1-100), tangga zigzag di ujung, block kurang tanam & panen. Block / seed kurang dibiarkan",
+            Desc = "Gali tanah, gua & lava di y 38-52 (x sampai ujung world), tangga zigzag di ujung, block kurang tanam & panen. Block / seed kurang dibiarkan",
             Value = false,
             Callback = function(on)
                 if on then Build.startDF() elseif Build.Running then Build.stop() end
